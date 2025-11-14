@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include "protocol.h"
+#include "../common/protocol.h"
 
 // Structure to store information about ONE file
 typedef struct {
@@ -101,9 +101,9 @@ int main() {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
-    // Bind to port
+    // Bind to ALL network interfaces (0.0.0.0)
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_addr.s_addr = INADDR_ANY;  // Listen on all interfaces
     address.sin_port = htons(TRACKER_PORT);
     
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
@@ -111,7 +111,7 @@ int main() {
         close(server_fd);
         exit(1);
     }
-    printf("✓ Bound to port %d\n", TRACKER_PORT);
+    printf("✓ Bound to 0.0.0.0:%d (listening on all network interfaces)\n", TRACKER_PORT);
     
     // Listen
     if (listen(server_fd, 3) < 0) {
@@ -133,7 +133,7 @@ int main() {
             continue;
         }
         
-        // Get client's IP address
+        // Get client's IP address (REAL IP from network)
         char client_ip[16];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
         printf("✓ Client connected from %s\n", client_ip);
@@ -153,6 +153,7 @@ int main() {
                 
                 sscanf(buffer, "REGISTER %s %d", filename, &peer_port);
                 
+                // Store with REAL IP (from socket, not from message)
                 add_file(filename, client_ip, peer_port);
                 print_all_files();
                 

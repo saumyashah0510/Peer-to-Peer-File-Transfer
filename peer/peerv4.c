@@ -7,15 +7,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include "protocol.h"
-#include "file_ops.h"
+#include "../common/protocol.h"
+#include "../file_ops.h"
+#include "network_utils.h"
 
 // Global variables
 int my_port;
-char my_ip[16] = "127.0.0.1";
-char shared_dir[256];
-char pieces_dir[256];
-char downloads_dir[256];
+char my_ip[16];
+char tracker_ip[16];
+char base_dir[256] = "p2p_data";  // Single base directory
 
 // Clear screen
 void clear_screen() {
@@ -35,10 +35,10 @@ int connect_to_tracker(char *message, char *response) {
     
     tracker_addr.sin_family = AF_INET;
     tracker_addr.sin_port = htons(TRACKER_PORT);
-    tracker_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    tracker_addr.sin_addr.s_addr = inet_addr(tracker_ip);  // Use tracker IP from command line
     
     if (connect(sock, (struct sockaddr *)&tracker_addr, sizeof(tracker_addr)) < 0) {
-        printf("✗ Cannot connect to tracker\n");
+        printf("✗ Cannot connect to tracker at %s:%d\n", tracker_ip, TRACKER_PORT);
         close(sock);
         return -1;
     }
@@ -55,7 +55,7 @@ int connect_to_tracker(char *message, char *response) {
     return 0;
 }
 
-// Get file info (number of pieces) from peer
+// Get file info from peer
 int get_file_info_from_peer(char *peer_ip, int peer_port, char *filename, int *num_pieces, long *file_size) {
     int sock;
     struct sockaddr_in peer_addr;
@@ -76,11 +76,9 @@ int get_file_info_from_peer(char *peer_ip, int peer_port, char *filename, int *n
         return -1;
     }
     
-    // Send: FILE_INFO filename
     sprintf(request, "FILE_INFO %s\n", filename);
     send(sock, request, strlen(request), 0);
     
-    // Read response: INFO pieces size
     int bytes = read(sock, response, sizeof(response));
     if (bytes > 0) {
         response[bytes] = '\0';
@@ -91,7 +89,7 @@ int get_file_info_from_peer(char *peer_ip, int peer_port, char *filename, int *n
     return 0;
 }
 
-// Connect to a peer and request a piece
+// Request piece from peer
 int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int piece_index, char *buffer, int *bytes_received) {
     int sock;
     struct sockaddr_in peer_addr;
@@ -114,11 +112,10 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
         return -1;
     }
     
-    // Send request
     sprintf(request, "REQUEST_PIECE %s %d\n", filename, piece_index);
     send(sock, request, strlen(request), 0);
     
-    // Read response header line by line until we hit \n
+    // Read header line by line
     int pos = 0;
     char ch;
     while (pos < 255) {
@@ -129,7 +126,6 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
     }
     response_line[pos] = '\0';
     
-    // Parse: SEND_PIECE piece_index size
     int received_index, data_size;
     if (sscanf(response_line, "SEND_PIECE %d %d", &received_index, &data_size) != 2) {
         printf("✗ Invalid response: %s\n", response_line);
@@ -138,33 +134,26 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
     }
     
     if (received_index != piece_index) {
-        printf("✗ Wrong piece received (expected %d, got %d)\n", piece_index, received_index);
+        printf("✗ Wrong piece received\n");
         close(sock);
         return -1;
     }
     
-    // Now read exactly data_size bytes of actual data
+    // Read piece data
     int total_received = 0;
     while (total_received < data_size) {
         int bytes = read(sock, buffer + total_received, data_size - total_received);
-        if (bytes <= 0) {
-            printf("✗ Connection closed early (got %d/%d bytes)\n", total_received, data_size);
-            break;
-        }
+        if (bytes <= 0) break;
         total_received += bytes;
     }
     
     *bytes_received = total_received;
     close(sock);
     
-    if (total_received != data_size) {
-        printf("✗ Incomplete piece (got %d, expected %d)\n", total_received, data_size);
-        return -1;
-    }
-    
-    return 0;
+    return (total_received == data_size) ? 0 : -1;
 }
-// Download file from peers
+
+// Download file
 void download_file() {
     char filename[MAX_FILENAME];
     char message[1024];
@@ -175,7 +164,6 @@ void download_file() {
     scanf("%s", filename);
     getchar();
     
-    // Step 1: Query tracker for peers
     sprintf(message, "QUERY %s\n", filename);
     
     printf("Searching for peers...\n");
@@ -193,7 +181,6 @@ void download_file() {
         return;
     }
     
-    // Parse peer list
     int peer_count;
     char peer_list[1024];
     strcpy(peer_list, response);
@@ -206,16 +193,8 @@ void download_file() {
         return;
     }
     
-    if (peer_count == 0) {
-        printf("✗ No peers have this file\n");
-        printf("\nPress Enter to continue...");
-        getchar();
-        return;
-    }
-    
     printf("✓ Found %d peer(s)\n", peer_count);
     
-    // Get first peer's IP and port
     line = strtok(NULL, "\n");
     char peer_ip[16];
     int peer_port;
@@ -229,7 +208,6 @@ void download_file() {
     
     printf("Connecting to peer: %s:%d\n", peer_ip, peer_port);
     
-    // Step 2: Get file info from peer (AUTO-DETECT!)
     int num_pieces;
     long file_size;
     
@@ -243,7 +221,6 @@ void download_file() {
     
     printf("✓ File size: %ld bytes, %d pieces\n", file_size, num_pieces);
     
-    // Step 3: Download each piece
     printf("\nDownloading %d piece(s)...\n", num_pieces);
     
     char *piece_buffer = (char*)malloc(PIECE_SIZE);
@@ -254,13 +231,17 @@ void download_file() {
         return;
     }
     
+    // Download pieces to temp directory
+    char temp_dir[512];
+    sprintf(temp_dir, "%s/temp_download", base_dir);
+    
     for (int i = 0; i < num_pieces; i++) {
         printf("Downloading piece %d/%d... ", i+1, num_pieces);
         fflush(stdout);
         
         int bytes_received;
         if (request_piece_from_peer(peer_ip, peer_port, filename, i, piece_buffer, &bytes_received) == 0) {
-            save_piece(filename, downloads_dir, i, piece_buffer, bytes_received);
+            save_piece(filename, temp_dir, i, piece_buffer, bytes_received);
             printf("✓ (%d bytes)\n", bytes_received);
         } else {
             printf("✗ Failed\n");
@@ -273,14 +254,18 @@ void download_file() {
     
     free(piece_buffer);
     
-    // Step 4: Assemble pieces
     printf("\nAssembling file...\n");
     char output_path[512];
-    sprintf(output_path, "%s/%s", downloads_dir, filename);
+    sprintf(output_path, "%s/downloads/%s", base_dir, filename);
     
-    if (assemble_file(filename, downloads_dir, num_pieces, output_path) == 0) {
+    if (assemble_file(filename, temp_dir, num_pieces, output_path) == 0) {
         printf("\n✓ Download complete: %s\n", output_path);
         printf("✓ File size: %ld bytes\n", file_size);
+        
+        // Clean up temp pieces
+        char cleanup_cmd[512];
+        sprintf(cleanup_cmd, "rm -f %s/%s.piece*", temp_dir, filename);
+        system(cleanup_cmd);
     } else {
         printf("\n✗ Failed to assemble file\n");
     }
@@ -289,7 +274,7 @@ void download_file() {
     getchar();
 }
 
-// Handle incoming peer connection (upload pieces)
+// Handle peer upload
 void* handle_peer_upload(void *arg) {
     int client_fd = *(int*)arg;
     free(arg);
@@ -300,27 +285,23 @@ void* handle_peer_upload(void *arg) {
     if (bytes_read > 0) {
         buffer[bytes_read] = '\0';
         
-        // Check for FILE_INFO request
         if (strncmp(buffer, "FILE_INFO", 9) == 0) {
             char filename[MAX_FILENAME];
             sscanf(buffer, "FILE_INFO %s", filename);
             
             printf("[Info] Request for file info: %s\n", filename);
             
-            // Get file info
             char filepath[512];
-            sprintf(filepath, "%s/%s", shared_dir, filename);
+            sprintf(filepath, "%s/shared/%s", base_dir, filename);
             long file_size = get_file_size(filepath);
             int num_pieces = calculate_num_pieces(file_size);
             
-            // Send response: INFO num_pieces file_size
             char response[256];
             sprintf(response, "INFO %d %ld\n", num_pieces, file_size);
             send(client_fd, response, strlen(response), 0);
             
             printf("[Info] Sent: %d pieces, %ld bytes\n", num_pieces, file_size);
         }
-        // Check for REQUEST_PIECE
         else if (strncmp(buffer, "REQUEST_PIECE", 13) == 0) {
             char filename[MAX_FILENAME];
             int piece_index;
@@ -331,13 +312,13 @@ void* handle_peer_upload(void *arg) {
                 char *piece_data = (char*)malloc(PIECE_SIZE);
                 int piece_size;
                 
+                char pieces_dir[512];
+                sprintf(pieces_dir, "%s/pieces", base_dir);
+                
                 if (read_piece(filename, pieces_dir, piece_index, piece_data, &piece_size) == 0) {
-                    // Send header
                     char response_header[256];
                     sprintf(response_header, "SEND_PIECE %d %d\n", piece_index, piece_size);
                     send(client_fd, response_header, strlen(response_header), 0);
-                    
-                    // Send data
                     send(client_fd, piece_data, piece_size, 0);
                     
                     printf("[Upload] Sent piece %d (%d bytes)\n", piece_index, piece_size);
@@ -354,13 +335,16 @@ void* handle_peer_upload(void *arg) {
     return NULL;
 }
 
-// List files in shared directory
+// List shared files
 void list_shared_files() {
     DIR *dir;
     struct dirent *entry;
     int count = 0;
     
     printf("\n--- Shared Files ---\n");
+    
+    char shared_dir[512];
+    sprintf(shared_dir, "%s/shared", base_dir);
     
     dir = opendir(shared_dir);
     if (!dir) {
@@ -399,7 +383,7 @@ void list_shared_files() {
     getchar();
 }
 
-// Add file to shared directory
+// Add file to share
 void add_file_to_share() {
     char source_path[512];
     char filename[MAX_FILENAME];
@@ -424,7 +408,7 @@ void add_file_to_share() {
     }
     
     char dest_path[512];
-    sprintf(dest_path, "%s/%s", shared_dir, filename);
+    sprintf(dest_path, "%s/shared/%s", base_dir, filename);
     
     char copy_cmd[2048];
     sprintf(copy_cmd, "cp %s %s", source_path, dest_path);
@@ -433,6 +417,10 @@ void add_file_to_share() {
     printf("✓ File copied to shared directory\n");
     
     printf("\nSplitting file into pieces...\n");
+    
+    char pieces_dir[512];
+    sprintf(pieces_dir, "%s/pieces", base_dir);
+    
     int num_pieces = split_file(dest_path, pieces_dir);
     
     if (num_pieces > 0) {
@@ -443,7 +431,7 @@ void add_file_to_share() {
     getchar();
 }
 
-// Register file with tracker
+// Register file
 void register_file() {
     char filename[MAX_FILENAME];
     char message[1024];
@@ -455,7 +443,7 @@ void register_file() {
     getchar();
     
     char filepath[512];
-    sprintf(filepath, "%s/%s", shared_dir, filename);
+    sprintf(filepath, "%s/shared/%s", base_dir, filename);
     
     if (get_file_size(filepath) < 0) {
         printf("✗ File not found in shared directory\n");
@@ -480,7 +468,7 @@ void register_file() {
     getchar();
 }
 
-// Query for a file
+// Query file
 void query_file() {
     char filename[MAX_FILENAME];
     char message[1024];
@@ -526,7 +514,7 @@ void* listener_thread(void *arg) {
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_addr.s_addr = INADDR_ANY;  // Listen on all interfaces
     address.sin_port = htons(my_port);
     
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
@@ -541,7 +529,7 @@ void* listener_thread(void *arg) {
         return NULL;
     }
     
-    printf("✓ Listener started on port %d\n", my_port);
+    printf("✓ Listener started on %s:%d\n", my_ip, my_port);
     
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
@@ -568,7 +556,8 @@ void show_menu() {
     printf("========================================\n");
     printf("Your IP: %s\n", my_ip);
     printf("Your Port: %d\n", my_port);
-    printf("Shared Directory: %s\n", shared_dir);
+    printf("Tracker: %s:%d\n", tracker_ip, TRACKER_PORT);
+    printf("Data Directory: %s/\n", base_dir);
     printf("========================================\n\n");
     
     printf("MENU:\n");
@@ -585,24 +574,34 @@ int main(int argc, char *argv[]) {
     pthread_t listener_tid;
     int choice;
     
-    if (argc != 2) {
-        printf("Usage: %s <port>\n", argv[0]);
-        printf("Example: %s 9000\n", argv[0]);
+    if (argc != 3) {
+        printf("Usage: %s <my_port> <tracker_ip>\n", argv[0]);
+        printf("Example: %s 9000 192.168.1.100\n", argv[0]);
+        printf("  - my_port: Port this peer will listen on\n");
+        printf("  - tracker_ip: IP address of tracker server\n");
         exit(1);
     }
     
     my_port = atoi(argv[1]);
+    strcpy(tracker_ip, argv[2]);
     
-    sprintf(shared_dir, "peer_%d_shared", my_port);
-    sprintf(pieces_dir, "peer_%d_pieces", my_port);
-    sprintf(downloads_dir, "peer_%d_downloads", my_port);
+    // Auto-detect my real IP
+    if (get_my_ip(my_ip) != 0) {
+        printf("⚠ Warning: Could not detect real IP, using 127.0.0.1\n");
+    }
     
+    // Create single organized directory structure
     char mkdir_cmd[1024];
-    sprintf(mkdir_cmd, "mkdir -p %s %s %s", shared_dir, pieces_dir, downloads_dir);
+    sprintf(mkdir_cmd, "mkdir -p %s/shared %s/pieces %s/downloads %s/temp_download", 
+            base_dir, base_dir, base_dir, base_dir);
     system(mkdir_cmd);
     
     printf("========================================\n");
-    printf("   Starting P2P Peer on port %d\n", my_port);
+    printf("   Starting P2P Peer\n");
+    printf("========================================\n");
+    printf("My IP: %s\n", my_ip);
+    printf("My Port: %d\n", my_port);
+    printf("Tracker: %s:%d\n", tracker_ip, TRACKER_PORT);
     printf("========================================\n\n");
     
     printf("Starting listener thread...\n");
