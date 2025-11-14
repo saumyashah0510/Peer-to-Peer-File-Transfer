@@ -10,12 +10,14 @@
 #include "../common/protocol.h"
 #include "../file_ops.h"
 #include "network_utils.h"
+#include "progress_bar.h"
+#include "multi_source.h"
 
 // Global variables
 int my_port;
 char my_ip[16];
 char tracker_ip[16];
-char base_dir[256] = "p2p_data";  // Single base directory
+char base_dir[256] = "p2p_data";
 
 // Clear screen
 void clear_screen() {
@@ -35,7 +37,7 @@ int connect_to_tracker(char *message, char *response) {
     
     tracker_addr.sin_family = AF_INET;
     tracker_addr.sin_port = htons(TRACKER_PORT);
-    tracker_addr.sin_addr.s_addr = inet_addr(tracker_ip);  // Use tracker IP from command line
+    tracker_addr.sin_addr.s_addr = inet_addr(tracker_ip);
     
     if (connect(sock, (struct sockaddr *)&tracker_addr, sizeof(tracker_addr)) < 0) {
         printf("✗ Cannot connect to tracker at %s:%d\n", tracker_ip, TRACKER_PORT);
@@ -98,7 +100,6 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
     
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        printf("✗ Socket creation failed\n");
         return -1;
     }
     
@@ -107,7 +108,6 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
     peer_addr.sin_addr.s_addr = inet_addr(peer_ip);
     
     if (connect(sock, (struct sockaddr *)&peer_addr, sizeof(peer_addr)) < 0) {
-        printf("✗ Cannot connect to peer %s:%d\n", peer_ip, peer_port);
         close(sock);
         return -1;
     }
@@ -128,13 +128,11 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
     
     int received_index, data_size;
     if (sscanf(response_line, "SEND_PIECE %d %d", &received_index, &data_size) != 2) {
-        printf("✗ Invalid response: %s\n", response_line);
         close(sock);
         return -1;
     }
     
     if (received_index != piece_index) {
-        printf("✗ Wrong piece received\n");
         close(sock);
         return -1;
     }
@@ -153,17 +151,88 @@ int request_piece_from_peer(char *peer_ip, int peer_port, char *filename, int pi
     return (total_received == data_size) ? 0 : -1;
 }
 
-// Download file
+// Download worker thread
+typedef struct {
+    DownloadContext *ctx;
+    PeerConnection *peer;
+    int thread_id;
+} DownloadWorkerArgs;
+
+void* download_worker(void *arg) {
+    DownloadWorkerArgs *args = (DownloadWorkerArgs*)arg;
+    DownloadContext *ctx = args->ctx;
+    PeerConnection *peer = args->peer;
+    int thread_id = args->thread_id;
+    
+    // Find peer index
+    int peer_index = -1;
+    for (int i = 0; i < ctx->peer_count; i++) {
+        if (strcmp(ctx->peers[i].ip, peer->ip) == 0 && 
+            ctx->peers[i].port == peer->port) {
+            peer_index = i;
+            break;
+        }
+    }
+    
+    char *piece_buffer = (char*)malloc(PIECE_SIZE);
+    if (!piece_buffer) {
+        free(arg);
+        return NULL;
+    }
+    
+    while (!is_download_complete(ctx) && !ctx->failed) {
+        // Get next piece to download
+        int piece_index = get_next_piece(ctx);
+        
+        if (piece_index == -1) {
+            // No more pieces to download
+            break;
+        }
+        
+        // Download piece from peer
+        int bytes_received;
+        if (request_piece_from_peer(peer->ip, peer->port, ctx->filename, 
+                                     piece_index, piece_buffer, &bytes_received) == 0) {
+            // Success - save piece
+            save_piece(ctx->filename, ctx->downloads_dir, piece_index, 
+                      piece_buffer, bytes_received);
+            
+            mark_piece_completed(ctx, piece_index, peer_index, bytes_received);
+            
+            // Update progress
+            pthread_mutex_lock(&ctx->status_mutex);
+            update_progress(ctx->progress, bytes_received);
+            display_progress(ctx->progress);
+            
+            // Show which peer just contributed (color coded!)
+            printf(" [P%d]", peer_index + 1);
+            fflush(stdout);
+            
+            pthread_mutex_unlock(&ctx->status_mutex);
+            
+        } else {
+            // Failed - mark for retry
+            mark_piece_failed(ctx, piece_index);
+        }
+    }
+    
+    free(piece_buffer);
+    free(arg);
+    return NULL;
+}
+
+// Download file with multi-source support and per-peer stats
 void download_file() {
     char filename[MAX_FILENAME];
     char message[1024];
     char response[1024];
     
-    printf("\n--- Download File ---\n");
+    printf("\n--- Download File (Multi-Source) ---\n");
     printf("Enter filename to download: ");
     scanf("%s", filename);
     getchar();
     
+    // Query tracker for peers
     sprintf(message, "QUERY %s\n", filename);
     
     printf("Searching for peers...\n");
@@ -175,100 +244,132 @@ void download_file() {
     }
     
     if (strncmp(response, "ERROR", 5) == 0) {
-        printf("✗ File not found on network\n");
+        printf("✗ File not found\n");
         printf("\nPress Enter to continue...");
         getchar();
         return;
     }
     
+    // Parse peer list
     int peer_count;
-    char peer_list[1024];
+    char peer_list[2048];
     strcpy(peer_list, response);
     
     char *line = strtok(peer_list, "\n");
-    if (sscanf(line, "PEERS %d", &peer_count) != 1) {
-        printf("✗ Invalid tracker response\n");
-        printf("\nPress Enter to continue...");
-        getchar();
-        return;
-    }
+    sscanf(line, "PEERS %d", &peer_count);
     
     printf("✓ Found %d peer(s)\n", peer_count);
     
-    line = strtok(NULL, "\n");
-    char peer_ip[16];
-    int peer_port;
-    
-    if (sscanf(line, "%[^:]:%d", peer_ip, &peer_port) != 2) {
-        printf("✗ Cannot parse peer address\n");
+    if (peer_count == 0) {
+        printf("✗ No peers available\n");
         printf("\nPress Enter to continue...");
         getchar();
         return;
     }
     
-    printf("Connecting to peer: %s:%d\n", peer_ip, peer_port);
+    // Get file info from first peer
+    line = strtok(NULL, "\n");
+    char first_peer_ip[16];
+    int first_peer_port;
+    sscanf(line, "%[^:]:%d", first_peer_ip, &first_peer_port);
     
     int num_pieces;
     long file_size;
     
-    printf("Getting file information...\n");
-    if (get_file_info_from_peer(peer_ip, peer_port, filename, &num_pieces, &file_size) != 0) {
-        printf("✗ Cannot get file info from peer\n");
+    printf("Getting file information from %s:%d...\n", first_peer_ip, first_peer_port);
+    if (get_file_info_from_peer(first_peer_ip, first_peer_port, filename, &num_pieces, &file_size) != 0) {
+        printf("✗ Cannot get file info\n");
         printf("\nPress Enter to continue...");
         getchar();
         return;
     }
     
-    printf("✓ File size: %ld bytes, %d pieces\n", file_size, num_pieces);
+    printf("\n");
+    printf("========================================\n");
+    printf("File: %s\n", filename);
+    printf("Size: %.2f MB (%ld bytes)\n", file_size / (1024.0 * 1024.0), file_size);
+    printf("Pieces: %d\n", num_pieces);
+    printf("Peers: %d\n", peer_count);
+    printf("========================================\n\n");
     
-    printf("\nDownloading %d piece(s)...\n", num_pieces);
-    
-    char *piece_buffer = (char*)malloc(PIECE_SIZE);
-    if (!piece_buffer) {
-        printf("✗ Memory allocation failed\n");
-        printf("\nPress Enter to continue...");
-        getchar();
-        return;
-    }
-    
-    // Download pieces to temp directory
+    // Initialize download context
     char temp_dir[512];
     sprintf(temp_dir, "%s/temp_download", base_dir);
     
-    for (int i = 0; i < num_pieces; i++) {
-        printf("Downloading piece %d/%d... ", i+1, num_pieces);
-        fflush(stdout);
-        
-        int bytes_received;
-        if (request_piece_from_peer(peer_ip, peer_port, filename, i, piece_buffer, &bytes_received) == 0) {
-            save_piece(filename, temp_dir, i, piece_buffer, bytes_received);
-            printf("✓ (%d bytes)\n", bytes_received);
-        } else {
-            printf("✗ Failed\n");
-            free(piece_buffer);
-            printf("\nPress Enter to continue...");
-            getchar();
-            return;
+    DownloadContext ctx;
+    init_download_context(&ctx, filename, num_pieces, file_size, temp_dir);
+    
+    // Add all peers to context
+    strcpy(peer_list, response);  // Reset peer_list
+    line = strtok(peer_list, "\n");  // Skip "PEERS X"
+    line = strtok(NULL, "\n");  // First peer
+    
+    while (line != NULL && ctx.peer_count < MAX_PEERS) {
+        char ip[16];
+        int port;
+        if (sscanf(line, "%[^:]:%d", ip, &port) == 2) {
+            add_peer_to_context(&ctx, ip, port);
+            printf("Added peer %d: %s:%d\n", ctx.peer_count, ip, port);
         }
+        line = strtok(NULL, "\n");
     }
     
-    free(piece_buffer);
+    printf("\nStarting multi-source download from %d peer(s)...\n", ctx.peer_count);
+    printf("Watch for [P1], [P2], [P3]... indicators showing which peer is contributing!\n\n");
+    sleep(1);
     
-    printf("\nAssembling file...\n");
-    char output_path[512];
-    sprintf(output_path, "%s/downloads/%s", base_dir, filename);
+    // Create worker threads
+    pthread_t workers[MAX_CONCURRENT_DOWNLOADS];
+    int num_workers = (ctx.peer_count < MAX_CONCURRENT_DOWNLOADS) ? 
+                      ctx.peer_count : MAX_CONCURRENT_DOWNLOADS;
     
-    if (assemble_file(filename, temp_dir, num_pieces, output_path) == 0) {
-        printf("\n✓ Download complete: %s\n", output_path);
-        printf("✓ File size: %ld bytes\n", file_size);
+    printf("Spawning %d download threads...\n\n", num_workers);
+    
+    for (int i = 0; i < num_workers; i++) {
+        DownloadWorkerArgs *args = (DownloadWorkerArgs*)malloc(sizeof(DownloadWorkerArgs));
+        args->ctx = &ctx;
+        args->peer = &ctx.peers[i % ctx.peer_count];
+        args->thread_id = i;
         
-        // Clean up temp pieces
-        char cleanup_cmd[512];
-        sprintf(cleanup_cmd, "rm -f %s/%s.piece*", temp_dir, filename);
-        system(cleanup_cmd);
-    } else {
-        printf("\n✗ Failed to assemble file\n");
+        pthread_create(&workers[i], NULL, download_worker, args);
     }
+    
+    // Wait for all workers to finish
+    for (int i = 0; i < num_workers; i++) {
+        pthread_join(workers[i], NULL);
+    }
+    
+    printf("\n\n");
+    
+    // Display per-peer statistics
+    display_peer_stats(&ctx);
+    
+    // Assemble file
+    if (is_download_complete(&ctx)) {
+        printf("\nAssembling file...\n");
+        char output_path[512];
+        sprintf(output_path, "%s/downloads/%s", base_dir, filename);
+        
+        if (assemble_file(filename, temp_dir, num_pieces, output_path) == 0) {
+            printf("\n========================================\n");
+            printf("✓ Download Complete!\n");
+            printf("========================================\n");
+            printf("File: %s\n", output_path);
+            printf("Size: %.2f MB\n", file_size / (1024.0 * 1024.0));
+            printf("Average Speed: %.2f MB/s\n", get_speed_mbps(ctx.progress));
+            printf("Time Taken: %ld seconds\n", time(NULL) - ctx.progress->start_time);
+            printf("========================================\n");
+            
+            // Cleanup temp pieces
+            char cleanup_cmd[1024];
+            sprintf(cleanup_cmd, "rm -f %s/%s.piece*", temp_dir, filename);
+            system(cleanup_cmd);
+        }
+    } else {
+        printf("\n✗ Download incomplete or failed\n");
+    }
+    
+    cleanup_download_context(&ctx);
     
     printf("\nPress Enter to continue...");
     getchar();
@@ -364,13 +465,14 @@ void list_shared_files() {
         }
         
         count++;
-        char filepath[512];
+        char filepath[1024];
         sprintf(filepath, "%s/%s", shared_dir, entry->d_name);
         
         long size = get_file_size(filepath);
         int pieces = calculate_num_pieces(size);
         
-        printf("%d. %s (%ld bytes, %d pieces)\n", count, entry->d_name, size, pieces);
+        printf("%d. %s (%.2f MB, %d pieces)\n", count, entry->d_name, 
+               size / (1024.0 * 1024.0), pieces);
     }
     
     closedir(dir);
@@ -514,7 +616,7 @@ void* listener_thread(void *arg) {
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;  // Listen on all interfaces
+    address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(my_port);
     
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
@@ -552,7 +654,8 @@ void* listener_thread(void *arg) {
 void show_menu() {
     clear_screen();
     printf("========================================\n");
-    printf("       P2P File Transfer - Peer\n");
+    printf("   P2P File Transfer - Peer v5.0\n");
+    printf("   (Multi-Source + Per-Peer Stats)\n");
     printf("========================================\n");
     printf("Your IP: %s\n", my_ip);
     printf("Your Port: %d\n", my_port);
@@ -565,7 +668,7 @@ void show_menu() {
     printf("2. List shared files\n");
     printf("3. Register file with tracker\n");
     printf("4. Query for a file\n");
-    printf("5. Download a file\n");
+    printf("5. Download a file (Multi-Source + Stats)\n");
     printf("6. Exit\n");
     printf("\nEnter choice: ");
 }
@@ -577,8 +680,6 @@ int main(int argc, char *argv[]) {
     if (argc != 3) {
         printf("Usage: %s <my_port> <tracker_ip>\n", argv[0]);
         printf("Example: %s 9000 192.168.1.100\n", argv[0]);
-        printf("  - my_port: Port this peer will listen on\n");
-        printf("  - tracker_ip: IP address of tracker server\n");
         exit(1);
     }
     
@@ -590,14 +691,14 @@ int main(int argc, char *argv[]) {
         printf("⚠ Warning: Could not detect real IP, using 127.0.0.1\n");
     }
     
-    // Create single organized directory structure
-    char mkdir_cmd[1024];
+    // Create directory structure
+    char mkdir_cmd[2048];
     sprintf(mkdir_cmd, "mkdir -p %s/shared %s/pieces %s/downloads %s/temp_download", 
             base_dir, base_dir, base_dir, base_dir);
     system(mkdir_cmd);
     
     printf("========================================\n");
-    printf("   Starting P2P Peer\n");
+    printf("   Starting P2P Peer v5.0\n");
     printf("========================================\n");
     printf("My IP: %s\n", my_ip);
     printf("My Port: %d\n", my_port);
