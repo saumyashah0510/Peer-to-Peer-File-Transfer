@@ -10,4 +10,6 @@
 // Filename can be maximum 100 characters
 #define MAX_FILENAME 100
 
+#define MSG_FILE_INFO "FILE_INFO"    // Ask peer for file information
+
 #endif
