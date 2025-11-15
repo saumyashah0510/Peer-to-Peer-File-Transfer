@@ -159,30 +159,41 @@ typedef struct {
 } DownloadWorkerArgs;
 
 void* download_worker(void *arg) {
+    /*✔ A small helper
+✔ Assigned to one peer
+✔ Downloads pieces one-by-one
+✔ Saves them
+✔ Updates progress
+✔ Retries failed pieces
+✔ Stops when everything is done*/
     DownloadWorkerArgs *args = (DownloadWorkerArgs*)arg;
     DownloadContext *ctx = args->ctx;
     PeerConnection *peer = args->peer;
     int thread_id = args->thread_id;
     
-    // Find peer index
+    // Find 2hich peer number is this
     int peer_index = -1;
     for (int i = 0; i < ctx->peer_count; i++) {
         if (strcmp(ctx->peers[i].ip, peer->ip) == 0 && 
-            ctx->peers[i].port == peer->port) {
+            ctx->peers[i].port == peer->port) {//compare ip and port
             peer_index = i;
             break;
         }
     }
     
-    char *piece_buffer = (char*)malloc(PIECE_SIZE);
+    char *piece_buffer = (char*)malloc(PIECE_SIZE);//allocate memeory to store one piece
     if (!piece_buffer) {
         free(arg);
         return NULL;
     }
-    
+    /*he thread keeps downloading while:
+
+The full file is NOT completed
+
+The download has NOT been marked as failed*/
     while (!is_download_complete(ctx) && !ctx->failed) {
         // Get next piece to download
-        int piece_index = get_next_piece(ctx);
+        int piece_index = get_next_piece(ctx);//this chooses a piece which  is not downloaded yet
         
         if (piece_index == -1) {
             // No more pieces to download
