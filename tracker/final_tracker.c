@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include "../common/protocol.h"
 
-// Structure to store information about ONE file
+// Stores filename, ip address and port number
 typedef struct {
     char filename[MAX_FILENAME];
     char peer_ip[16];
@@ -15,8 +15,8 @@ typedef struct {
 } FileRecord;
 
 // Array to store all registered files (max 10 files)
-FileRecord registered_files[10];
-int file_count = 0;
+FileRecord registered_files[10]; 
+int file_count = 0; // counter
 
 // Function to add a file to our memory
 void add_file(char *filename, char *ip, int port) {
@@ -34,6 +34,7 @@ void add_file(char *filename, char *ip, int port) {
 }
 
 // Function to find peers who have a specific file
+// response is pointer to buffer where we will write response message
 void find_peers(char *filename, char *response) {
     int found = 0;
     char temp[1024] = "";
@@ -43,11 +44,11 @@ void find_peers(char *filename, char *response) {
         if (strcmp(registered_files[i].filename, filename) == 0) {
             // Found a match!
             found++;
-            char peer_info[100];
+            char peer_info[100]; // temporary buffer to store one peers information
             sprintf(peer_info, "%s:%d\n", 
                     registered_files[i].peer_ip, 
-                    registered_files[i].peer_port);
-            strcat(temp, peer_info);
+                    registered_files[i].peer_port); // Creates a string like "192.168.1.5:9000\n" and writes to peer_info buffer
+            strcat(temp, peer_info); // concats peer_info to temp to get final buffer to write to response
         }
     }
     
@@ -77,6 +78,7 @@ void print_all_files() {
 }
 
 int main() {
+
     int server_fd, client_fd;
     struct sockaddr_in address, client_addr;
     int addrlen = sizeof(address);
@@ -97,15 +99,24 @@ int main() {
     }
     printf("✓ Socket created\n");
     
-    // Reuse address (important!)
+    
     int opt = 1;
+
+    /*
+    set options on a socket file descriptor : 
+    server_fd : which socket
+    SOL_SOCKET : Socket level option (general for all protocols)
+    SO_REUSEADDR : Allow reuse of local addresses. Without this, if you stop the server and restart it immediately, you'll get "Address already in use" error
+    */
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
-    // Bind to ALL network interfaces (0.0.0.0)
+
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;  // Listen on all interfaces
-    address.sin_port = htons(TRACKER_PORT);
+    address.sin_port = htons(TRACKER_PORT); // htons : host to network server : for converting port number, TRACKER_PORT from protocols.h i.e. 8080
     
+
+    // Bind associates the socket with an address (IP + port)
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         printf("✗ Bind failed\n");
         close(server_fd);
@@ -113,7 +124,8 @@ int main() {
     }
     printf("✓ Bound to 0.0.0.0:%d (listening on all network interfaces)\n", TRACKER_PORT);
     
-    // Listen
+
+    // Listen marks socket to accept connections(Backlog : 3 i.e. maximum 3 waiting in queue)
     if (listen(server_fd, 3) < 0) {
         printf("✗ Listen failed\n");
         close(server_fd);
@@ -122,10 +134,13 @@ int main() {
     printf("✓ Listening for connections...\n");
     printf("========================================\n");
     
+
     // MAIN LOOP: Handle multiple clients forever
     while (1) {
+
         printf("\n[Waiting for client...]\n");
         
+
         // Accept connection
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
@@ -133,14 +148,15 @@ int main() {
             continue;
         }
         
+
         // Get client's IP address (REAL IP from network)
-        char client_ip[16];
-        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+        char client_ip[16]; 
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip)); // converts binary IP to human-readable string
         printf("✓ Client connected from %s\n", client_ip);
         
         // Read message from client
-        memset(buffer, 0, sizeof(buffer));
-        int bytes_read = read(client_fd, buffer, 1024);
+        memset(buffer, 0, sizeof(buffer)); // memset : Memory set - fills memory with a specific value
+        int bytes_read = read(client_fd, buffer, 1024); 
         
         if (bytes_read > 0) {
             buffer[bytes_read] = '\0';

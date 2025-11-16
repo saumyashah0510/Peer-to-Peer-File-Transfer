@@ -1,3 +1,5 @@
+// Splitting files into pieces and reassembling them
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,12 +15,13 @@ long get_file_size(char *filename) {
     return -1;
 }
 
-// Calculate how many pieces a file needs
+
+// Determine how many 256KB pieces we need for a file
 int calculate_num_pieces(long file_size) {
     return (file_size + PIECE_SIZE - 1) / PIECE_SIZE;
 }
 
-// Split a file into pieces and save them
+
 // Split a file into pieces and save them
 int split_file(char *filepath, char *output_dir) {
     FILE *file = fopen(filepath, "rb");
@@ -36,7 +39,7 @@ int split_file(char *filepath, char *output_dir) {
     }
     
     // Extract just the filename from full path
-    char *filename = strrchr(filepath, '/');
+    char *filename = strrchr(filepath, '/'); //String reverse (search from right) character - finds LAST occurrence of a character
     if (filename) {
         filename++;  // Skip the '/'
     } else {
