@@ -191,7 +191,7 @@ Peer 2: 127.0.0.1:9001
 ## 📖 Usage Guide
 
 ### Starting the Tracker
-
+## Uses socket programming to initiliaze socket every time a tracker is called and bind the socket to corresponding port and ip
 ```bash
 ./tracker.out
 ```
@@ -214,6 +214,7 @@ The tracker will:
 ```
 
 **Parameters:**
+## Again needs a socket to connect the peer. The socket established follows TCP connection so the packets are recieved by the peer in the same order that they are sent
 - `<port>`: Port number for this peer to listen on (9000-9999 recommended)
 - `<tracker_ip>`: IP address of the tracker server
 
@@ -257,6 +258,7 @@ Registering with tracker...
 ```
 
 #### 4. Query for a File
+## Every time a query is asked, FILE IO is used to read the filename from list of available files, and write is used to send response to the tracker that the file is available
 Searches for peers who have a specific file.
 
 ```
@@ -273,6 +275,7 @@ PEERS 2
 ```
 
 #### 5. Download a File (Multi-Source)
+## This uses threading, also while keeping a count of the pieces to be sent, MUTEX is applied so that the same piece is not processed by 2 peers at the same time, so that the process of piece sharing remains atomic
 Downloads file from multiple peers simultaneously.
 
 ```
