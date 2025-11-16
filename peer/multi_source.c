@@ -15,11 +15,11 @@ void init_download_context(DownloadContext *ctx, char *filename, int num_pieces,
     strcpy(ctx->downloads_dir, downloads_dir);
     
     // Allocate piece status array
-    ctx->piece_status = (int*)calloc(num_pieces, sizeof(int));
-    ctx->piece_source = (int*)calloc(num_pieces, sizeof(int));
+    ctx->piece_status = (int*)calloc(num_pieces, sizeof(int)); // Track status of each piece (0=not downloaded, 1=downloading, 2=completed)
+    ctx->piece_source = (int*)calloc(num_pieces, sizeof(int)); // Track which peer downloaded each piece
     
     // Initialize mutex
-    pthread_mutex_init(&ctx->status_mutex, NULL);
+    pthread_mutex_init(&ctx->status_mutex, NULL); // Prevent race conditions when multiple threads access piece_status array
     
     // Initialize progress tracker
     ctx->progress = (ProgressTracker*)malloc(sizeof(ProgressTracker));
@@ -40,7 +40,7 @@ void add_peer_to_context(DownloadContext *ctx, char *ip, int port) {
 }
 
 int get_next_piece(DownloadContext *ctx) {
-    pthread_mutex_lock(&ctx->status_mutex);
+    pthread_mutex_lock(&ctx->status_mutex); // Ensure only ONE thread can access piece_status array at a time
     
     int piece = -1;
     
