@@ -6,19 +6,6 @@ A high-performance, BitTorrent-inspired peer-to-peer file transfer system implem
 [![Language: C](https://img.shields.io/badge/Language-C-blue.svg)](https://en.wikipedia.org/wiki/C_(programming_language))
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-green.svg)](https://www.linux.org/)
 
----
-
-## 📋 Table of Contents
-
-- [Features](#features)
-- [Architecture](#architecture)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Usage Guide](#usage-guide)
-- [Project Structure](#project-structure)
-- [Protocol Specification](#protocol-specification)
-- [License](#license)
-
 
 ---
 
