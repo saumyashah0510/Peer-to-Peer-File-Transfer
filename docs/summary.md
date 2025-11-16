@@ -1,20 +1,5 @@
 # P2P File Transfer System - Complete Function Summary
 
-## 📁 Project Structure
-```
-p2p_project/
-├── common/
-│   └── protocol.h          (Constants and definitions)
-├── tracker.c               (Tracker server)
-├── file_ops.c/h            (File manipulation)
-├── progress_bar.c/h        (Progress display)
-├── network_utils.c/h       (Network utilities)
-├── multi_source.c/h        (Multi-peer coordination)
-└── peerv5.c                (Main peer application)
-```
-
----
-
 ## 1️⃣ protocol.h - Constants & Definitions
 
 ### Constants
