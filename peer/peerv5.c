@@ -13,16 +13,19 @@
 #include "progress_bar.h"
 #include "multi_source.h"
 
+
 // Global variables
-int my_port;
-char my_ip[16];
-char tracker_ip[16];
-char base_dir[256] = "p2p_data";
+int my_port; // peers port
+char my_ip[16]; // peers ip address
+char tracker_ip[16]; // trackers ip address
+char base_dir[256] = "p2p_data"; 
+
 
 // Clear screen
 void clear_screen() {
     printf("\033[2J\033[H");
 }
+
 
 // Connect to tracker
 int connect_to_tracker(char *message, char *response) {
@@ -320,8 +323,7 @@ void download_file() {
     
     // Create worker threads
     pthread_t workers[MAX_CONCURRENT_DOWNLOADS];
-    int num_workers = (ctx.peer_count < MAX_CONCURRENT_DOWNLOADS) ? 
-                      ctx.peer_count : MAX_CONCURRENT_DOWNLOADS;
+    int num_workers = MAX_CONCURRENT_DOWNLOADS;
     
     printf("Spawning %d download threads...\n\n", num_workers);
     
